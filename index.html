@@ -1,0 +1,318 @@
+from flask import Flask, request, redirect, render_template_string
+import sqlite3
+
+app = Flask(__name__)
+DB = "pharmacy.db"
+
+
+def init_db():
+    with sqlite3.connect(DB) as con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS medicines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                price REAL NOT NULL,
+                stock INTEGER NOT NULL
+            )
+        """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS bills (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                medicine TEXT NOT NULL,
+                quantity INTEGER NOT NULL,
+                total REAL NOT NULL,
+                date TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+
+init_db()
+
+
+HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pharmacy Management System</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:Arial,sans-serif;background:#f0f4f8;color:#243247}
+header{background:#087f8c;color:white;padding:25px;text-align:center}
+header h1{margin:0}
+nav{background:#075e66;padding:14px;text-align:center}
+nav a{color:white;text-decoration:none;margin:0 12px;font-weight:bold}
+.container{max-width:1100px;margin:25px auto;padding:15px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px}
+.card{background:white;padding:22px;border-radius:12px;margin-bottom:22px;
+box-shadow:0 3px 12px #00000012}
+.stat{font-size:28px;color:#087f8c;font-weight:bold}
+h2{color:#087f8c;margin-top:0}
+input,select{padding:11px;border:1px solid #cbd5e1;border-radius:6px;
+margin:5px 3px;max-width:100%}
+button,.btn{background:#087f8c;color:white;padding:11px 15px;
+border:0;border-radius:6px;cursor:pointer;text-decoration:none}
+.danger{background:#dc3545}
+table{width:100%;border-collapse:collapse;margin-top:15px}
+th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}
+th{background:#e0f2f1}
+.table-wrap{overflow-x:auto}
+.low{color:#dc2626;font-weight:bold}
+footer{text-align:center;padding:20px;color:#64748b}
+@media(max-width:600px){nav a{display:inline-block;margin:6px}input,select{width:100%}}
+</style>
+</head>
+<body>
+
+<header>
+<h1>💊 Pharmacy Management System</h1>
+<p>Medicine Stock Management & Billing</p>
+</header>
+
+<nav>
+<a href="/">Dashboard</a>
+<a href="#add">Add Medicine</a>
+<a href="#stock">Medicine Stock</a>
+<a href="#billing">Billing</a>
+<a href="#history">Bill History</a>
+</nav>
+
+<div class="container">
+
+{% if message %}
+<div class="card">{{ message }}</div>
+{% endif %}
+
+<div class="cards">
+<div class="card">
+<h3>Total Medicines</h3>
+<div class="stat">{{ count }}</div>
+</div>
+<div class="card">
+<h3>Total Stock Units</h3>
+<div class="stat">{{ stock_total }}</div>
+</div>
+<div class="card">
+<h3>Low Stock Medicines</h3>
+<div class="stat">{{ low_stock }}</div>
+</div>
+<div class="card">
+<h3>Total Sales</h3>
+<div class="stat">₹{{ "%.2f"|format(sales) }}</div>
+</div>
+</div>
+
+<section class="card" id="add">
+<h2>➕ Add New Medicine</h2>
+<form method="POST" action="/add">
+<input name="name" placeholder="Medicine name" required maxlength="100">
+<input name="price" type="number" placeholder="Price (₹)"
+min="0.01" step="0.01" required>
+<input name="stock" type="number" placeholder="Quantity"
+min="0" required>
+<button type="submit">Add Medicine</button>
+</form>
+</section>
+
+<section class="card" id="stock">
+<h2>📦 Medicine Stock</h2>
+<form method="GET" action="/">
+<input name="q" placeholder="Search medicine..."
+value="{{ query }}">
+<button type="submit">Search</button>
+<a class="btn" href="/">Show All</a>
+</form>
+<div class="table-wrap">
+<table>
+<tr>
+<th>ID</th><th>Medicine</th><th>Price</th><th>Stock</th><th>Action</th>
+</tr>
+{% for m in medicines %}
+<tr>
+<td>{{ m[0] }}</td>
+<td>{{ m[1] }}</td>
+<td>₹{{ "%.2f"|format(m[2]) }}</td>
+<td class="{% if m[3] < 10 %}low{% endif %}">{{ m[3] }}</td>
+<td>
+<form method="POST" action="/delete/{{ m[0] }}"
+onsubmit="return confirm('Delete this medicine?')">
+<button class="danger" type="submit">Delete</button>
+</form>
+</td>
+</tr>
+{% else %}
+<tr><td colspan="5">No medicines found.</td></tr>
+{% endfor %}
+</table>
+</div>
+</section>
+
+<section class="card" id="billing">
+<h2>🧾 Generate Bill</h2>
+<form method="POST" action="/bill">
+<select name="medicine_id" required>
+<option value="">Select Medicine</option>
+{% for m in all_medicines %}
+{% if m[3] > 0 %}
+<option value="{{ m[0] }}">{{ m[1] }} — ₹{{ "%.2f"|format(m[2]) }} (Stock: {{ m[3] }})</option>
+{% endif %}
+{% endfor %}
+</select>
+<input type="number" name="quantity" min="1"
+placeholder="Quantity" required>
+<button type="submit">Generate Bill</button>
+</form>
+</section>
+
+<section class="card" id="history">
+<h2>📋 Bill History</h2>
+<div class="table-wrap">
+<table>
+<tr><th>Bill ID</th><th>Medicine</th><th>Quantity</th>
+<th>Total</th><th>Date</th></tr>
+{% for b in bills %}
+<tr>
+<td>{{ b[0] }}</td><td>{{ b[1] }}</td><td>{{ b[2] }}</td>
+<td>₹{{ "%.2f"|format(b[3]) }}</td><td>{{ b[4] }}</td>
+</tr>
+{% else %}
+<tr><td colspan="5">No bills generated yet.</td></tr>
+{% endfor %}
+</table>
+</div>
+</section>
+
+</div>
+<footer>Pharmacy Management System | Python & Flask</footer>
+</body>
+</html>
+"""
+
+
+def get_data(query=""):
+    with sqlite3.connect(DB) as con:
+        medicines = con.execute(
+            "SELECT id,name,price,stock FROM medicines "
+            "WHERE name LIKE ? ORDER BY name",
+            ("%" + query + "%",)
+        ).fetchall()
+
+        all_medicines = con.execute(
+            "SELECT id,name,price,stock FROM medicines ORDER BY name"
+        ).fetchall()
+
+        bills = con.execute(
+            "SELECT id,medicine,quantity,total,date FROM bills "
+            "ORDER BY id DESC"
+        ).fetchall()
+
+        count, stock_total, low_stock = con.execute("""
+            SELECT COUNT(*), COALESCE(SUM(stock),0),
+            COALESCE(SUM(CASE WHEN stock < 10 THEN 1 ELSE 0 END),0)
+            FROM medicines
+        """).fetchone()
+
+        sales = con.execute(
+            "SELECT COALESCE(SUM(total),0) FROM bills"
+        ).fetchone()[0]
+
+    return medicines, all_medicines, bills, count, stock_total, low_stock, sales
+
+
+def page(message="", query=""):
+    data = get_data(query)
+    return render_template_string(
+        HTML,
+        medicines=data[0],
+        all_medicines=data[1],
+        bills=data[2],
+        count=data[3],
+        stock_total=data[4],
+        low_stock=data[5],
+        sales=data[6],
+        message=message,
+        query=query
+    )
+
+
+@app.route("/")
+def home():
+    return page(query=request.args.get("q", "").strip())
+
+
+@app.route("/add", methods=["POST"])
+def add_medicine():
+    name = request.form.get("name", "").strip()
+
+    try:
+        price = float(request.form.get("price", ""))
+        stock = int(request.form.get("stock", ""))
+
+        if not name or price <= 0 or stock < 0:
+            return page("Enter valid medicine details.")
+
+        with sqlite3.connect(DB) as con:
+            con.execute(
+                "INSERT INTO medicines (name,price,stock) VALUES (?,?,?)",
+                (name, price, stock)
+            )
+
+        return page("Medicine added successfully!")
+
+    except (ValueError, TypeError):
+        return page("Invalid price or quantity.")
+
+
+@app.route("/bill", methods=["POST"])
+def create_bill():
+    try:
+        medicine_id = int(request.form.get("medicine_id", ""))
+        quantity = int(request.form.get("quantity", ""))
+
+        if quantity <= 0:
+            return page("Quantity must be greater than zero.")
+
+        with sqlite3.connect(DB) as con:
+            con.execute("BEGIN IMMEDIATE")
+
+            medicine = con.execute(
+                "SELECT name,price,stock FROM medicines WHERE id=?",
+                (medicine_id,)
+            ).fetchone()
+
+            if not medicine:
+                return page("Medicine not found.")
+
+            name, price, stock = medicine
+
+            if quantity > stock:
+                return page("Insufficient stock.")
+
+            total = round(price * quantity, 2)
+
+            con.execute(
+                "UPDATE medicines SET stock=stock-? WHERE id=?",
+                (quantity, medicine_id)
+            )
+
+            con.execute(
+                "INSERT INTO bills (medicine,quantity,total) VALUES (?,?,?)",
+                (name, quantity, total)
+            )
+
+        return page(f"Bill generated! Total amount: ₹{total:.2f}")
+
+    except (ValueError, TypeError):
+        return page("Please enter valid billing details.")
+
+
+@app.route("/delete/<int:medicine_id>", methods=["POST"])
+def delete_medicine(medicine_id):
+    with sqlite3.connect(DB) as con:
+        con.execute("DELETE FROM medicines WHERE id=?", (medicine_id,))
+    return page("Medicine deleted.")
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
